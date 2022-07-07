@@ -224,6 +224,10 @@ func (r *ReconcileMachineSet) reconcile(ctx context.Context, machineSet *machine
 				continue
 			}
 		}
+
+		ownedMachinesNames = append(ownedMachinesNames, machine.Name)
+		ownedMachines[machine.Name] = machine
+
 		machineNames = append(machineNames, machine.Name)
 		machineSetMachines[machine.Name] = machine
 	}
@@ -297,6 +301,7 @@ func (r *ReconcileMachineSet) syncReplicas(ms *machinev1.MachineSet, machines []
 		var machineList []*machinev1.Machine
 		var errstrings []string
 		for i := 0; i < diff; i++ {
+			fmt.Printf("DEBUG: totalMachinesCount+1: %d, maxSurge+spec.replicas: %d\n", totalMachinesCount+1, maxSurge+int(*(ms.Spec.Replicas)))
 			if totalMachinesCount+1 > maxSurge+int(*(ms.Spec.Replicas)) {
 				klog.Infof("Unable to create machine %d of %d, ( totalMachineCount(%d) + 1 exceeds the maxSurge limit of  replicas(%d) + %d)  )", i+1, diff, len(ownedMachines), int(*(ms.Spec.Replicas)), maxSurge)
 				break
