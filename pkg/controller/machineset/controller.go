@@ -200,9 +200,20 @@ func (r *ReconcileMachineSet) reconcile(ctx context.Context, machineSet *machine
 	// Filter out irrelevant machines (deleting/mismatch labels) and claim orphaned machines.
 	var machineNames []string
 	machineSetMachines := make(map[string]*machinev1.Machine)
+
+	var ownedMachinesNames []string
+	ownedMachines := make(map[string]*machinev1.Machine)
+
 	for idx := range allMachines.Items {
 		machine := &allMachines.Items[idx]
 		if shouldExcludeMachine(machineSet, machine) {
+			continue
+		}
+
+		// TODO(damdo): change this
+		if machine.ObjectMeta.DeletionTimestamp != nil {
+			ownedMachinesNames = append(ownedMachinesNames, machine.Name)
+			ownedMachines[machine.Name] = machine
 			continue
 		}
 
@@ -223,8 +234,12 @@ func (r *ReconcileMachineSet) reconcile(ctx context.Context, machineSet *machine
 	for _, machineName := range machineNames {
 		filteredMachines = append(filteredMachines, machineSetMachines[machineName])
 	}
+	var ownedFilteredMachines []*machinev1.Machine
+	for _, machineName := range ownedMachinesNames {
+		ownedFilteredMachines = append(ownedFilteredMachines, ownedMachines[machineName])
+	}
 
-	syncErr := r.syncReplicas(machineSet, filteredMachines)
+	syncErr := r.syncReplicas(machineSet, filteredMachines, ownedFilteredMachines)
 
 	ms := machineSet.DeepCopy()
 	newStatus := r.calculateStatus(ms, filteredMachines)
@@ -265,11 +280,13 @@ func (r *ReconcileMachineSet) reconcile(ctx context.Context, machineSet *machine
 }
 
 // syncReplicas essentially scales machine resources up and down.
-func (r *ReconcileMachineSet) syncReplicas(ms *machinev1.MachineSet, machines []*machinev1.Machine) error {
+func (r *ReconcileMachineSet) syncReplicas(ms *machinev1.MachineSet, machines []*machinev1.Machine, ownedMachines []*machinev1.Machine) error {
 	if ms.Spec.Replicas == nil {
 		return fmt.Errorf("the Replicas field in Spec for machineset %v is nil, this should not be allowed", ms.Name)
 	}
 
+	maxSurge := 1
+	totalMachinesCount := len(ownedMachines)
 	diff := len(machines) - int(*(ms.Spec.Replicas))
 
 	if diff < 0 {
@@ -280,9 +297,12 @@ func (r *ReconcileMachineSet) syncReplicas(ms *machinev1.MachineSet, machines []
 		var machineList []*machinev1.Machine
 		var errstrings []string
 		for i := 0; i < diff; i++ {
+			if totalMachinesCount+1 > maxSurge+int(*(ms.Spec.Replicas)) {
+				klog.Infof("Unable to create machine %d of %d, ( totalMachineCount(%d) + 1 exceeds the maxSurge limit of  replicas(%d) + %d)  )", i+1, diff, len(ownedMachines), int(*(ms.Spec.Replicas)), maxSurge)
+				break
+			}
 			klog.Infof("Creating machine %d of %d, ( spec.replicas(%d) > currentMachineCount(%d) )",
 				i+1, diff, *(ms.Spec.Replicas), len(machines))
-
 			machine := r.createMachine(ms)
 			if err := r.Client.Create(context.Background(), machine); err != nil {
 				klog.Errorf("Unable to create Machine %q: %v", machine.Name, err)
@@ -368,10 +388,6 @@ func shouldExcludeMachine(machineSet *machinev1.MachineSet, machine *machinev1.M
 	// Ignore inactive machines.
 	if metav1.GetControllerOf(machine) != nil && !metav1.IsControlledBy(machine, machineSet) {
 		klog.V(4).Infof("%s not controlled by %v", machine.Name, machineSet.Name)
-		return true
-	}
-
-	if machine.ObjectMeta.DeletionTimestamp != nil {
 		return true
 	}
 
